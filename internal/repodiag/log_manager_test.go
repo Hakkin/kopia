@@ -22,7 +22,7 @@ func TestLogManager_Enabled(t *testing.T) {
 
 	lm.Enable()
 	l := lm.NewLogger()
-	l.Infof("hello")
+	l.Info("hello")
 
 	require.Empty(t, d)
 	l.Sync()
@@ -53,7 +53,7 @@ func TestLogManager_AutoFlush(t *testing.T) {
 		var b [1024]byte
 
 		rand.Read(b[:])
-		l.Infof(hex.EncodeToString(b[:]))
+		l.Info(hex.EncodeToString(b[:]))
 	}
 
 	w.Wait(ctx)
@@ -74,7 +74,7 @@ func TestLogManager_NotEnabled(t *testing.T) {
 	lm := repodiag.NewLogManager(ctx, w)
 
 	l := lm.NewLogger()
-	l.Infof("hello")
+	l.Info("hello")
 
 	require.Empty(t, d)
 	l.Sync()
@@ -90,6 +90,6 @@ func TestLogManager_Null(t *testing.T) {
 	lm.Enable()
 
 	l := lm.NewLogger()
-	l.Infof("hello")
+	l.Info("hello")
 	l.Sync()
 }

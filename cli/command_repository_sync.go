@@ -69,7 +69,7 @@ func (c *commandRepositorySyncTo) setup(svc advancedAppServices, parent commandP
 
 				dr, ok := rep.(repo.DirectRepository)
 				if !ok {
-					return errors.Errorf("sync only supports directly-connected repositories")
+					return errors.New("sync only supports directly-connected repositories")
 				}
 
 				return c.runSyncWithStorage(ctx, dr.BlobReader(), st)
@@ -81,19 +81,19 @@ func (c *commandRepositorySyncTo) setup(svc advancedAppServices, parent commandP
 const syncProgressInterval = 300 * time.Millisecond
 
 func (c *commandRepositorySyncTo) runSyncWithStorage(ctx context.Context, src blob.Reader, dst blob.Storage) error {
-	log(ctx).Infof("Synchronizing repositories:")
+	log(ctx).Info("Synchronizing repositories:")
 	log(ctx).Infof("  Source:      %v", src.DisplayName())
 	log(ctx).Infof("  Destination: %v", dst.DisplayName())
 
 	if !c.repositorySyncDelete {
-		log(ctx).Infof("NOTE: By default no BLOBs are deleted, pass --delete to allow it.")
+		log(ctx).Info("NOTE: By default no BLOBs are deleted, pass --delete to allow it.")
 	}
 
 	if err := c.ensureRepositoriesHaveSameFormatBlob(ctx, src, dst); err != nil {
 		return err
 	}
 
-	log(ctx).Infof("Looking for BLOBs to synchronize...")
+	log(ctx).Info("Looking for BLOBs to synchronize...")
 
 	var (
 		inSyncBlobs int
@@ -162,7 +162,7 @@ func (c *commandRepositorySyncTo) runSyncWithStorage(ctx context.Context, src bl
 		return nil
 	}
 
-	log(ctx).Infof("Copying...")
+	log(ctx).Info("Copying...")
 
 	c.beginSyncProgress()
 
@@ -316,7 +316,7 @@ func (c *commandRepositorySyncTo) syncCopyBlob(ctx context.Context, m blob.Metad
 			// run again without SetModTime, emit a warning
 			opt.SetModTime = time.Time{}
 
-			log(ctx).Warnf("destination repository does not support preserving modification times")
+			log(ctx).Warn("destination repository does not support preserving modification times")
 
 			c.repositorySyncTimes = false
 
@@ -356,7 +356,7 @@ func (c *commandRepositorySyncTo) ensureRepositoriesHaveSameFormatBlob(ctx conte
 		// target does not have format blob, save it there first.
 		if errors.Is(err, blob.ErrBlobNotFound) {
 			if c.repositorySyncDestinationMustExist {
-				return errors.Errorf("destination repository does not have a format blob")
+				return errors.New("destination repository does not have a format blob")
 			}
 
 			return errors.Wrap(dst.PutBlob(ctx, format.KopiaRepositoryBlobID, srcData.Bytes(), blob.PutOptions{}), "error saving format blob")
@@ -379,7 +379,7 @@ func (c *commandRepositorySyncTo) ensureRepositoriesHaveSameFormatBlob(ctx conte
 		return nil
 	}
 
-	return errors.Errorf("destination repository contains incompatible data")
+	return errors.New("destination repository contains incompatible data")
 }
 
 func parseUniqueID(r gather.Bytes) (string, error) {
@@ -392,7 +392,7 @@ func parseUniqueID(r gather.Bytes) (string, error) {
 	}
 
 	if f.UniqueID == "" {
-		return "", errors.Errorf("unique ID not found")
+		return "", errors.New("unique ID not found")
 	}
 
 	return f.UniqueID, nil

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/repotesting"
+	"github.com/kopia/kopia/notification/notifytemplate"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/maintenance"
 )
@@ -47,6 +48,14 @@ func (s *testServer) refreshScheduler(reason string) {
 	s.refreshSchedulerCount.Add(1)
 }
 
+func (s *testServer) enableErrorNotifications() bool {
+	return false
+}
+
+func (s *testServer) notificationTemplateOptions() notifytemplate.Options {
+	return notifytemplate.DefaultOptions
+}
+
 func TestServerMaintenance(t *testing.T) {
 	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
 
@@ -78,7 +87,7 @@ func TestServerMaintenance(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 
 	ts.mu.Lock()
-	ts.err = errors.Errorf("some error")
+	ts.err = errors.New("some error")
 	ts.mu.Unlock()
 
 	mm.trigger()

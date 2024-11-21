@@ -465,7 +465,7 @@ func (m *ManagerV0) getBlobsToCompact(indexBlobs []Metadata, opt CompactOptions,
 
 	if len(nonCompactedBlobs) < opt.MaxSmallBlobs {
 		// current count is below min allowed - nothing to do
-		m.log.Debugf("no small contents to Compact")
+		m.log.Debug("no small contents to Compact")
 		return nil
 	}
 
@@ -550,7 +550,7 @@ func (m *ManagerV0) dropContentsFromBuilder(bld index.Builder, opt CompactOption
 	}
 }
 
-func addIndexBlobsToBuilder(ctx context.Context, enc *EncryptionManager, bld index.Builder, indexBlobID blob.ID) error {
+func addIndexBlobsToBuilder(ctx context.Context, enc *EncryptionManager, bld index.BuilderCreator, indexBlobID blob.ID) error {
 	var data gather.WriteBuffer
 	defer data.Close()
 

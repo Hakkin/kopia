@@ -19,6 +19,8 @@ type commandPolicySet struct {
 
 	policyActionFlags
 	policyCompressionFlags
+	policyMetadataCompressionFlags
+	policySplitterFlags
 	policyErrorFlags
 	policyFilesFlags
 	policyLoggingFlags
@@ -35,6 +37,8 @@ func (c *commandPolicySet) setup(svc appServices, parent commandParent) {
 
 	c.policyActionFlags.setup(cmd)
 	c.policyCompressionFlags.setup(cmd)
+	c.policyMetadataCompressionFlags.setup(cmd)
+	c.policySplitterFlags.setup(cmd)
 	c.policyErrorFlags.setup(cmd)
 	c.policyFilesFlags.setup(cmd)
 	c.policyLoggingFlags.setup(cmd)
@@ -106,6 +110,14 @@ func (c *commandPolicySet) setPolicyFromFlags(ctx context.Context, p *policy.Pol
 		return errors.Wrap(err, "compression policy")
 	}
 
+	if err := c.setMetadataCompressionPolicyFromFlags(ctx, &p.MetadataCompressionPolicy, changeCount); err != nil {
+		return errors.Wrap(err, "metadata compression policy")
+	}
+
+	if err := c.setSplitterPolicyFromFlags(ctx, &p.SplitterPolicy, changeCount); err != nil {
+		return errors.Wrap(err, "splitter policy")
+	}
+
 	if err := c.setSchedulingPolicyFromFlags(ctx, &p.SchedulingPolicy, changeCount); err != nil {
 		return errors.Wrap(err, "scheduling policy")
 	}
@@ -136,8 +148,8 @@ func (c *commandPolicySet) setPolicyFromFlags(ctx context.Context, p *policy.Pol
 	return nil
 }
 
-func applyPolicyStringList(ctx context.Context, desc string, val *[]string, add, remove []string, clear bool, changeCount *int) {
-	if clear {
+func applyPolicyStringList(ctx context.Context, desc string, val *[]string, add, remove []string, clearList bool, changeCount *int) {
+	if clearList {
 		log(ctx).Infof(" - removing all from %q", desc)
 
 		*changeCount++

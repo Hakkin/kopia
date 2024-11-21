@@ -1,9 +1,16 @@
 package user
 
-// DefaultPasswordHashingAlgorithm is the default password hashing scheme for user profiles.
-const DefaultPasswordHashingAlgorithm = scryptHashAlgorithm
+import "github.com/pkg/errors"
 
-// PasswordHashingAlgorithms returns the supported algorithms for user password hashing.
-func PasswordHashingAlgorithms() []string {
-	return []string{scryptHashAlgorithm, pbkdf2HashAlgorithm}
+// getPasswordHashAlgorithm returns the password hash algorithm given a version.
+func getPasswordHashAlgorithm(passwordHashVersion int) (string, error) {
+	switch passwordHashVersion {
+	// when the version is unsetDefaulHashVersion, map it to ScryptHashVersion
+	case unsetDefaulHashVersion, ScryptHashVersion:
+		return scryptHashAlgorithm, nil
+	case Pbkdf2HashVersion:
+		return pbkdf2HashAlgorithm, nil
+	default:
+		return "", errors.Errorf("unsupported hash version (%d)", passwordHashVersion)
+	}
 }

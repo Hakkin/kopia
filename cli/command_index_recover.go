@@ -49,7 +49,7 @@ func (c *commandIndexRecover) run(ctx context.Context, rep repo.DirectRepository
 
 	defer func() {
 		if recoveredContentCount.Load() == 0 {
-			log(ctx).Infof("No contents recovered.")
+			log(ctx).Info("No contents recovered.")
 			return
 		}
 
@@ -196,7 +196,7 @@ func (c *commandIndexRecover) recoverIndexFromSinglePackFile(ctx context.Context
 		return errors.Wrapf(err, "unable to recover index from %v", blobID)
 	}
 
-	recoveredContentCount.Add(int32(len(recovered)))
+	recoveredContentCount.Add(int32(len(recovered))) //nolint:gosec
 	processedBlobCount.Add(1)
 	log(ctx).Debugf("Recovered %v entries from %v (commit=%v)", len(recovered), blobID, c.commit)
 

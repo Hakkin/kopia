@@ -100,7 +100,7 @@ func (c *commandRepositoryCreate) newRepositoryOptionsFromFlags() *repo.NewRepos
 }
 
 func (c *commandRepositoryCreate) ensureEmpty(ctx context.Context, s blob.Storage) error {
-	hasDataError := errors.Errorf("has data")
+	hasDataError := errors.New("has data")
 
 	err := s.ListBlobs(ctx, "", func(_ blob.Metadata) error {
 		return hasDataError
@@ -126,7 +126,7 @@ func (c *commandRepositoryCreate) runCreateCommandWithStorage(ctx context.Contex
 		return errors.Wrap(err, "getting password")
 	}
 
-	log(ctx).Infof("Initializing repository with:")
+	log(ctx).Info("Initializing repository with:")
 
 	if options.BlockFormat.Version != 0 {
 		log(ctx).Infof("  format version:      %v", options.BlockFormat.Version)

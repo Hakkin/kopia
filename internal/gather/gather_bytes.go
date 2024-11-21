@@ -14,10 +14,12 @@ var (
 	//nolint:gochecknoglobals
 	invalidSliceBuf = []byte(uuid.NewString())
 	// ErrInvalidOffset checkable error for supplying an invalid offset.
-	ErrInvalidOffset = errors.Errorf("invalid offset")
+	ErrInvalidOffset = errors.New("invalid offset")
 )
 
 // Bytes represents a sequence of bytes split into slices.
+//
+//nolint:recvcheck
 type Bytes struct {
 	Slices [][]byte
 
@@ -42,7 +44,7 @@ func (b *Bytes) AppendSectionTo(w io.Writer, offset, size int) error {
 	b.assertValid()
 
 	if offset < 0 {
-		return errors.Errorf("invalid offset")
+		return errors.New("invalid offset")
 	}
 
 	// find the index of starting slice
@@ -237,7 +239,7 @@ func (b *bytesReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 	}
 
 	if newOffset < 0 || newOffset > b.b.Length() {
-		return 0, errors.Errorf("invalid seek")
+		return 0, errors.New("invalid seek")
 	}
 
 	b.offset = newOffset

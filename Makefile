@@ -206,7 +206,7 @@ endif
 endif
 endif
 	$(MAKE) kopia
-ifeq ($(GOARCH),amd64)
+ifneq ($(GOOS)/$(GOARCH),linux/arm64)
 	$(retry) $(MAKE) kopia-ui
 	$(retry) $(MAKE) kopia-ui-test
 endif
@@ -276,8 +276,12 @@ test-with-coverage: $(gotestsum) $(TESTING_ACTION_EXE)
 test: GOTESTSUM_FLAGS=--format=$(GOTESTSUM_FORMAT) --no-summary=skipped --jsonfile=.tmp.unit-tests.json
 test: export TESTING_ACTION_EXE ?= $(TESTING_ACTION_EXE)
 test: $(gotestsum) $(TESTING_ACTION_EXE)
-	$(GO_TEST) $(UNIT_TEST_RACE_FLAGS) -tags testing -count=$(REPEAT_TEST) -timeout $(UNIT_TESTS_TIMEOUT) ./...
+	$(GO_TEST) $(UNIT_TEST_RACE_FLAGS) -tags testing -count=$(REPEAT_TEST) -timeout $(UNIT_TESTS_TIMEOUT) -skip '^TestIndexBlobManagerStress$$' ./...
 	-$(gotestsum) tool slowest --jsonfile .tmp.unit-tests.json  --threshold 1000ms
+
+test-index-blob-v0: GOTESTSUM_FLAGS=--format=pkgname --no-summary=output,skipped
+test-index-blob-v0: $(gotestsum) $(TESTING_ACTION_EXE)
+	$(GO_TEST) $(UNIT_TEST_RACE_FLAGS) -tags testing -count=$(REPEAT_TEST) -timeout $(UNIT_TESTS_TIMEOUT)  -run '^TestIndexBlobManagerStress$$' ./repo/content/indexblob/...
 
 provider-tests-deps: $(gotestsum) $(rclone) $(MINIO_MC_PATH)
 
@@ -307,8 +311,9 @@ $(TESTING_ACTION_EXE): tests/testingaction/main.go
 
 compat-tests: export KOPIA_CURRENT_EXE=$(CURDIR)/$(kopia_ui_embedded_exe)
 compat-tests: export KOPIA_08_EXE=$(kopia08)
+compat-tests: export KOPIA_017_EXE=$(kopia017)
 compat-tests: GOTESTSUM_FLAGS=--format=testname --no-summary=skipped --jsonfile=.tmp.compat-tests.json
-compat-tests: $(kopia_ui_embedded_exe) $(kopia08) $(gotestsum)
+compat-tests: $(kopia_ui_embedded_exe) $(kopia08) $(kopia017) $(gotestsum)
 	$(GO_TEST) $(TEST_FLAGS) -count=$(REPEAT_TEST) -parallel $(PARALLEL) -timeout 3600s github.com/kopia/kopia/tests/compat_test
 	#  -$(gotestsum) tool slowest --jsonfile .tmp.compat-tests.json  --threshold 1000ms
 

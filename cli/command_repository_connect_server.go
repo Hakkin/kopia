@@ -36,9 +36,6 @@ func (c *commandRepositoryConnectServer) setup(svc advancedAppServices, parent c
 
 func (c *commandRepositoryConnectServer) run(ctx context.Context) error {
 	localCacheKeyDerivationAlgorithm := c.connectAPIServerLocalCacheKeyDerivationAlgorithm
-	if localCacheKeyDerivationAlgorithm == "" {
-		localCacheKeyDerivationAlgorithm = repo.DefaultServerRepoCacheKeyDerivationAlgorithm
-	}
 
 	as := &repo.APIServerInfo{
 		BaseURL:                             strings.TrimSuffix(c.connectAPIServerURL, "/"),
@@ -72,7 +69,7 @@ func (c *commandRepositoryConnectServer) run(ctx context.Context) error {
 		return errors.Wrap(err, "error connecting to API server")
 	}
 
-	log(ctx).Infof("Connected to repository API Server.")
+	log(ctx).Info("Connected to repository API Server.")
 	c.svc.maybeInitializeUpdateCheck(ctx, c.co)
 
 	return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,12 +20,14 @@ import (
 	htpasswd "github.com/tg123/go-htpasswd"
 
 	"github.com/kopia/kopia/internal/auth"
-	"github.com/kopia/kopia/internal/ctxutil"
 	"github.com/kopia/kopia/internal/server"
 	"github.com/kopia/kopia/repo"
 )
 
-const serverRandomPasswordLength = 32
+const (
+	defaultServerControlUsername = "server-control"
+	serverRandomPasswordLength   = 32
+)
 
 type commandServerStart struct {
 	co connectOptions
@@ -93,7 +96,7 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 	cmd.Flag("htpasswd-file", "Path to htpasswd file that contains allowed user@hostname entries").Hidden().ExistingFileVar(&c.serverStartHtpasswdFile)
 
 	cmd.Flag("random-server-control-password", "Generate random server control password and print to stderr").Hidden().BoolVar(&c.randomServerControlPassword)
-	cmd.Flag("server-control-username", "Server control username").Default("server-control").Envar(svc.EnvName("KOPIA_SERVER_CONTROL_USER")).StringVar(&c.serverControlUsername)
+	cmd.Flag("server-control-username", "Server control username").Default(defaultServerControlUsername).Envar(svc.EnvName("KOPIA_SERVER_CONTROL_USER")).StringVar(&c.serverControlUsername)
 	cmd.Flag("server-control-password", "Server control password").PlaceHolder("PASSWORD").Envar(svc.EnvName("KOPIA_SERVER_CONTROL_PASSWORD")).StringVar(&c.serverControlPassword)
 
 	cmd.Flag("auth-cookie-signing-key", "Force particular auth cookie signing key").Envar(svc.EnvName("KOPIA_AUTH_COOKIE_SIGNING_KEY")).Hidden().StringVar(&c.serverAuthCookieSingingKey)
@@ -158,6 +161,9 @@ func (c *commandServerStart) serverStartOptions(ctx context.Context) (*server.Op
 		DebugScheduler:         c.debugScheduler,
 		MinMaintenanceInterval: c.minMaintenanceInterval,
 		DisableCSRFTokenChecks: c.disableCSRFTokenChecks,
+
+		EnableErrorNotifications: c.svc.enableErrorNotifications(),
+		NotifyTemplateOptions:    c.svc.notificationTemplateOptions(),
 	}, nil
 }
 
@@ -178,7 +184,7 @@ func (c *commandServerStart) initRepositoryPossiblyAsync(ctx context.Context, sr
 	return nil
 }
 
-func (c *commandServerStart) run(ctx context.Context) error {
+func (c *commandServerStart) run(ctx context.Context) (reterr error) {
 	opts, err := c.serverStartOptions(ctx)
 	if err != nil {
 		return err
@@ -192,6 +198,13 @@ func (c *commandServerStart) run(ctx context.Context) error {
 	if err = c.initRepositoryPossiblyAsync(ctx, srv); err != nil {
 		return errors.Wrap(err, "unable to initialize repository")
 	}
+
+	defer func() {
+		// cleanup: disconnect repository
+		if err := srv.SetRepository(ctx, nil); err != nil {
+			reterr = stderrors.Join(reterr, errors.Wrap(err, "error disconnecting repository"))
+		}
+	}()
 
 	httpServer := &http.Server{
 		ReadHeaderTimeout: 15 * time.Second, //nolint:mnd
@@ -214,7 +227,7 @@ func (c *commandServerStart) run(ctx context.Context) error {
 			return errors.Wrap(httpServer.Close(), "close")
 		}
 
-		log(ctx2).Debugf("graceful shutdown succeeded")
+		log(ctx2).Debug("graceful shutdown succeeded")
 
 		return nil
 	}
@@ -248,25 +261,21 @@ func (c *commandServerStart) run(ctx context.Context) error {
 	if c.serverStartShutdownWhenStdinClosed {
 		log(ctx).Info("Server will close when stdin is closed...")
 
-		ctxutil.GoDetached(ctx, func(ctx context.Context) {
+		go func() {
+			ctx := context.WithoutCancel(ctx)
 			// consume all stdin and close the server when it closes
 			io.Copy(io.Discard, os.Stdin) //nolint:errcheck
 			shutdownHTTPServer(ctx, httpServer)
-		})
+		}()
 	}
 
 	onExternalConfigReloadRequest(srv.Refresh)
 
-	err = c.startServerWithOptionalTLS(ctx, httpServer)
-	if !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-
-	return errors.Wrap(srv.SetRepository(ctx, nil), "error setting active repository")
+	return c.startServerWithOptionalTLS(ctx, httpServer)
 }
 
 func shutdownHTTPServer(ctx context.Context, httpServer *http.Server) {
-	log(ctx).Infof("Shutting down HTTP server ...")
+	log(ctx).Info("Shutting down HTTP server ...")
 
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log(ctx).Errorln("unable to shut down HTTP server:", err)
@@ -314,7 +323,7 @@ func (c *commandServerStart) getAuthenticator(ctx context.Context) (auth.Authent
 	switch {
 	case c.serverStartWithoutPassword:
 		if !c.serverStartInsecure {
-			return nil, errors.Errorf("--without-password specified without --insecure, refusing to start server")
+			return nil, errors.New("--without-password specified without --insecure, refusing to start server")
 		}
 
 		return nil, nil

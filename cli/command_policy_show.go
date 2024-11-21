@@ -126,6 +126,10 @@ func printPolicy(out *textOutput, p *policy.Policy, def *policy.Definition) {
 	rows = append(rows, policyTableRow{})
 	rows = appendCompressionPolicyRows(rows, p, def)
 	rows = append(rows, policyTableRow{})
+	rows = appendMetadataCompressionPolicyRows(rows, p, def)
+	rows = append(rows, policyTableRow{})
+	rows = appendSplitterPolicyRows(rows, p, def)
+	rows = append(rows, policyTableRow{})
 	rows = appendActionsPolicyRows(rows, p, def)
 	rows = append(rows, policyTableRow{})
 	rows = appendOSSnapshotPolicyRows(rows, p, def)
@@ -386,6 +390,30 @@ func appendCompressionPolicyRows(rows []policyTableRow, p *policy.Policy, def *p
 	return rows
 }
 
+func appendMetadataCompressionPolicyRows(rows []policyTableRow, p *policy.Policy, def *policy.Definition) []policyTableRow {
+	if p.MetadataCompressionPolicy.CompressorName == "" || p.MetadataCompressionPolicy.CompressorName == "none" {
+		rows = append(rows, policyTableRow{"Metadata compression disabled.", "", ""})
+		return rows
+	}
+
+	return append(rows,
+		policyTableRow{"Metadata compression:", "", ""},
+		policyTableRow{"  Compressor:", string(p.MetadataCompressionPolicy.CompressorName), definitionPointToString(p.Target(), def.MetadataCompressionPolicy.CompressorName)})
+}
+
+func appendSplitterPolicyRows(rows []policyTableRow, p *policy.Policy, def *policy.Definition) []policyTableRow {
+	algorithm := p.SplitterPolicy.Algorithm
+	if algorithm == "" {
+		algorithm = "(repository default)"
+	}
+
+	rows = append(rows,
+		policyTableRow{"Splitter:", "", ""},
+		policyTableRow{"  Algorithm override:", algorithm, definitionPointToString(p.Target(), def.SplitterPolicy.Algorithm)})
+
+	return rows
+}
+
 func appendActionsPolicyRows(rows []policyTableRow, p *policy.Policy, def *policy.Definition) []policyTableRow {
 	var anyActions bool
 
@@ -473,5 +501,5 @@ func valueOrNotSetOptionalInt64Bytes(p *policy.OptionalInt64) string {
 		return "-"
 	}
 
-	return units.BytesString(int64(*p))
+	return units.BytesString(*p)
 }

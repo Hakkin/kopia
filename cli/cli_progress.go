@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,14 +21,19 @@ const (
 )
 
 type progressFlags struct {
-	enableProgress         bool
-	progressUpdateInterval time.Duration
-	out                    textOutput
+	enableProgress              bool
+	progressEstimationType      string
+	adaptiveEstimationThreshold int64
+	progressUpdateInterval      time.Duration
+	out                         textOutput
 }
 
 func (p *progressFlags) setup(svc appServices, app *kingpin.Application) {
 	app.Flag("progress", "Enable progress bar").Hidden().Default("true").BoolVar(&p.enableProgress)
+	app.Flag("progress-estimation-type", "Set type of estimation of the data to be snapshotted").Hidden().Default(snapshotfs.EstimationTypeClassic).
+		EnumVar(&p.progressEstimationType, snapshotfs.EstimationTypeClassic, snapshotfs.EstimationTypeRough, snapshotfs.EstimationTypeAdaptive)
 	app.Flag("progress-update-interval", "How often to update progress information").Hidden().Default("300ms").DurationVar(&p.progressUpdateInterval)
+	app.Flag("adaptive-estimation-threshold", "Sets the threshold below which the classic estimation method will be used").Hidden().Default(strconv.FormatInt(snapshotfs.AdaptiveEstimationThreshold, 10)).Int64Var(&p.adaptiveEstimationThreshold)
 	p.out.setup(svc)
 }
 
@@ -57,13 +63,18 @@ type cliProgress struct {
 
 	uploadStartTime timetrack.Estimator // +checklocksignore
 
-	estimatedFileCount  int   // +checklocksignore
+	estimatedFileCount  int64 // +checklocksignore
 	estimatedTotalBytes int64 // +checklocksignore
 
 	// indicates shared instance that does not reset counters at the beginning of upload.
 	shared bool
 
 	progressFlags
+}
+
+// Enabled returns true when progress is enabled.
+func (p *cliProgress) Enabled() bool {
+	return p.enableProgress
 }
 
 func (p *cliProgress) HashingFile(_ string) {
@@ -226,7 +237,7 @@ func (p *cliProgress) UploadStarted() {
 	p.uploading.Store(true)
 }
 
-func (p *cliProgress) EstimatedDataSize(fileCount int, totalBytes int64) {
+func (p *cliProgress) EstimatedDataSize(fileCount, totalBytes int64) {
 	if p.shared {
 		// do nothing
 		return
@@ -259,124 +270,11 @@ func (p *cliProgress) Finish() {
 	}
 }
 
-type cliRestoreProgress struct {
-	restoredCount      atomic.Int32
-	enqueuedCount      atomic.Int32
-	skippedCount       atomic.Int32
-	ignoredErrorsCount atomic.Int32
-
-	restoredTotalFileSize atomic.Int64
-	enqueuedTotalFileSize atomic.Int64
-	skippedTotalFileSize  atomic.Int64
-
-	progressUpdateInterval time.Duration
-	enableProgress         bool
-
-	svc            appServices
-	outputThrottle timetrack.Throttle
-	outputMutex    sync.Mutex
-	out            textOutput
-	eta            timetrack.Estimator
-
-	// +checklocks:outputMutex
-	lastLineLength int
-}
-
-func (p *cliRestoreProgress) setup(svc appServices, _ *kingpin.Application) {
-	cp := svc.getProgress()
-	if cp == nil {
-		return
+func (p *cliProgress) EstimationParameters() snapshotfs.EstimationParameters {
+	return snapshotfs.EstimationParameters{
+		Type:              p.progressEstimationType,
+		AdaptiveThreshold: p.adaptiveEstimationThreshold,
 	}
-
-	p.progressUpdateInterval = cp.progressUpdateInterval
-	p.enableProgress = cp.enableProgress
-	p.out = cp.out
-	p.svc = svc
-
-	p.eta = timetrack.Start()
-}
-
-func (p *cliRestoreProgress) SetCounters(
-	enqueuedCount, restoredCount, skippedCount, ignoredErrors int32,
-	enqueuedBytes, restoredBytes, skippedBytes int64,
-) {
-	p.enqueuedCount.Store(enqueuedCount)
-	p.enqueuedTotalFileSize.Store(enqueuedBytes)
-
-	p.restoredCount.Store(restoredCount)
-	p.restoredTotalFileSize.Store(restoredBytes)
-
-	p.skippedCount.Store(skippedCount)
-	p.skippedTotalFileSize.Store(skippedBytes)
-
-	p.ignoredErrorsCount.Store(ignoredErrors)
-
-	p.maybeOutput()
-}
-
-func (p *cliRestoreProgress) Flush() {
-	p.outputThrottle.Reset()
-	p.output("\n")
-}
-
-func (p *cliRestoreProgress) maybeOutput() {
-	if p.outputThrottle.ShouldOutput(p.svc.getProgress().progressUpdateInterval) {
-		p.output("")
-	}
-}
-
-func (p *cliRestoreProgress) output(suffix string) {
-	if !p.svc.getProgress().enableProgress {
-		return
-	}
-
-	p.outputMutex.Lock()
-	defer p.outputMutex.Unlock()
-
-	restoredCount := p.restoredCount.Load()
-	enqueuedCount := p.enqueuedCount.Load()
-	skippedCount := p.skippedCount.Load()
-	ignoredCount := p.ignoredErrorsCount.Load()
-
-	restoredSize := p.restoredTotalFileSize.Load()
-	enqueuedSize := p.enqueuedTotalFileSize.Load()
-	skippedSize := p.skippedTotalFileSize.Load()
-
-	if restoredSize == 0 {
-		return
-	}
-
-	var maybeRemaining, maybeSkipped, maybeErrors string
-	if est, ok := p.eta.Estimate(float64(restoredSize), float64(enqueuedSize)); ok {
-		maybeRemaining = fmt.Sprintf(" %v (%.1f%%) remaining %v",
-			units.BytesPerSecondsString(est.SpeedPerSecond),
-			est.PercentComplete,
-			est.Remaining)
-	}
-
-	if skippedCount > 0 {
-		maybeSkipped = fmt.Sprintf(", skipped %v (%v)", skippedCount, units.BytesString(skippedSize))
-	}
-
-	if ignoredCount > 0 {
-		maybeErrors = fmt.Sprintf(", ignored %v errors", ignoredCount)
-	}
-
-	line := fmt.Sprintf("Processed %v (%v) of %v (%v)%v%v%v.",
-		restoredCount+skippedCount, units.BytesString(restoredSize),
-		enqueuedCount, units.BytesString(enqueuedSize),
-		maybeSkipped, maybeErrors, maybeRemaining,
-	)
-
-	var extraSpaces string
-
-	if len(line) < p.lastLineLength {
-		// add extra spaces to wipe over previous line if it was longer than current
-		extraSpaces = strings.Repeat(" ", p.lastLineLength-len(line))
-	}
-
-	p.lastLineLength = len(line)
-	p.out.printStderr("\r%v%v%v", line, extraSpaces, suffix)
 }
 
 var _ snapshotfs.UploadProgress = (*cliProgress)(nil)

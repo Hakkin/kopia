@@ -33,11 +33,11 @@ func (e *repositoryEntry) IsDir() bool {
 func (e *repositoryEntry) Mode() os.FileMode {
 	switch e.metadata.Type {
 	case snapshot.EntryTypeDirectory:
-		return os.ModeDir | os.FileMode(e.metadata.Permissions)
+		return os.ModeDir | os.FileMode(e.metadata.Permissions) //nolint:gosec
 	case snapshot.EntryTypeSymlink:
-		return os.ModeSymlink | os.FileMode(e.metadata.Permissions)
+		return os.ModeSymlink | os.FileMode(e.metadata.Permissions) //nolint:gosec
 	case snapshot.EntryTypeFile:
-		return os.FileMode(e.metadata.Permissions)
+		return os.FileMode(e.metadata.Permissions) //nolint:gosec
 	case snapshot.EntryTypeUnknown:
 		return 0
 	default:
@@ -228,6 +228,10 @@ func (rsl *repositorySymlink) Readlink(ctx context.Context) (string, error) {
 	}
 
 	return string(b), nil
+}
+
+func (rsl *repositorySymlink) Resolve(ctx context.Context) (fs.Entry, error) {
+	return nil, errors.New("Symlink.Resolve not implemented in Repofs")
 }
 
 func (ee *repositoryEntryError) ErrorInfo() error {

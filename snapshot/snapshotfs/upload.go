@@ -10,7 +10,6 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,9 +36,8 @@ import (
 const DefaultCheckpointInterval = 45 * time.Minute
 
 var (
-	uploadLog   = logging.Module("uploader")
-	estimateLog = logging.Module("estimate")
-	repoFSLog   = logging.Module("repofs")
+	uploadLog = logging.Module("uploader")
+	repoFSLog = logging.Module("repofs")
 
 	uploadTracer = otel.Tracer("upload")
 )
@@ -145,10 +143,9 @@ func (u *Uploader) uploadFileInternal(ctx context.Context, parentCheckpointRegis
 	defer u.Progress.FinishedHashingFile(relativePath, f.Size())
 
 	if pf, ok := f.(snapshot.HasDirEntryOrNil); ok {
-		switch de, err := pf.DirEntryOrNil(ctx); {
-		case err != nil:
+		if de, err := pf.DirEntryOrNil(ctx); err != nil {
 			return nil, errors.Wrap(err, "can't read placeholder")
-		case err == nil && de != nil:
+		} else if de != nil {
 			// We have read sufficient information from the shallow file's extended
 			// attribute to construct DirEntry.
 			_, err := u.repo.VerifyObject(ctx, de.ObjectID)
@@ -161,11 +158,13 @@ func (u *Uploader) uploadFileInternal(ctx context.Context, parentCheckpointRegis
 	}
 
 	comp := pol.CompressionPolicy.CompressorForFile(f)
+	metadataComp := pol.MetadataCompressionPolicy.MetadataCompressor()
+	splitterName := pol.SplitterPolicy.SplitterForFile(f)
 
 	chunkSize := pol.UploadPolicy.ParallelUploadAboveSize.OrDefault(-1)
 	if chunkSize < 0 || f.Size() <= chunkSize {
 		// all data fits in 1 full chunks, upload directly
-		return u.uploadFileData(ctx, parentCheckpointRegistry, f, f.Name(), 0, -1, comp)
+		return u.uploadFileData(ctx, parentCheckpointRegistry, f, f.Name(), 0, -1, comp, metadataComp, splitterName)
 	}
 
 	// we always have N+1 parts, first N are exactly chunkSize, last one has undetermined length
@@ -190,11 +189,11 @@ func (u *Uploader) uploadFileInternal(ctx context.Context, parentCheckpointRegis
 		if wg.CanShareWork(u.workerPool) {
 			// another goroutine is available, delegate to them
 			wg.RunAsync(u.workerPool, func(_ *workshare.Pool[*uploadWorkItem], _ *uploadWorkItem) {
-				parts[i], partErrors[i] = u.uploadFileData(ctx, parentCheckpointRegistry, f, uuid.NewString(), offset, length, comp)
+				parts[i], partErrors[i] = u.uploadFileData(ctx, parentCheckpointRegistry, f, uuid.NewString(), offset, length, comp, metadataComp, splitterName)
 			}, nil)
 		} else {
 			// just do the work in the current goroutine
-			parts[i], partErrors[i] = u.uploadFileData(ctx, parentCheckpointRegistry, f, uuid.NewString(), offset, length, comp)
+			parts[i], partErrors[i] = u.uploadFileData(ctx, parentCheckpointRegistry, f, uuid.NewString(), offset, length, comp, metadataComp, splitterName)
 		}
 	}
 
@@ -205,10 +204,10 @@ func (u *Uploader) uploadFileInternal(ctx context.Context, parentCheckpointRegis
 		return nil, errors.Wrap(err, "error uploading parts")
 	}
 
-	return concatenateParts(ctx, u.repo, f.Name(), parts)
+	return concatenateParts(ctx, u.repo, f.Name(), parts, metadataComp)
 }
 
-func concatenateParts(ctx context.Context, rep repo.RepositoryWriter, name string, parts []*snapshot.DirEntry) (*snapshot.DirEntry, error) {
+func concatenateParts(ctx context.Context, rep repo.RepositoryWriter, name string, parts []*snapshot.DirEntry, metadataComp compression.Name) (*snapshot.DirEntry, error) {
 	var (
 		objectIDs []object.ID
 		totalSize int64
@@ -220,7 +219,7 @@ func concatenateParts(ctx context.Context, rep repo.RepositoryWriter, name strin
 		objectIDs = append(objectIDs, part.ObjectID)
 	}
 
-	resultObject, err := rep.ConcatenateObjects(ctx, objectIDs)
+	resultObject, err := rep.ConcatenateObjects(ctx, objectIDs, repo.ConcatenateOptions{Compressor: metadataComp})
 	if err != nil {
 		return nil, errors.Wrap(err, "concatenate")
 	}
@@ -233,7 +232,7 @@ func concatenateParts(ctx context.Context, rep repo.RepositoryWriter, name strin
 	return de, nil
 }
 
-func (u *Uploader) uploadFileData(ctx context.Context, parentCheckpointRegistry *checkpointRegistry, f fs.File, fname string, offset, length int64, compressor compression.Name) (*snapshot.DirEntry, error) {
+func (u *Uploader) uploadFileData(ctx context.Context, parentCheckpointRegistry *checkpointRegistry, f fs.File, fname string, offset, length int64, compressor, metadataComp compression.Name, splitterName string) (*snapshot.DirEntry, error) {
 	file, err := f.Open(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to open file")
@@ -241,9 +240,11 @@ func (u *Uploader) uploadFileData(ctx context.Context, parentCheckpointRegistry 
 	defer file.Close() //nolint:errcheck
 
 	writer := u.repo.NewObjectWriter(ctx, object.WriterOptions{
-		Description: "FILE:" + fname,
-		Compressor:  compressor,
-		AsyncWrites: 1, // upload chunk in parallel to writing another chunk
+		Description:        "FILE:" + fname,
+		Compressor:         compressor,
+		MetadataCompressor: metadataComp,
+		Splitter:           splitterName,
+		AsyncWrites:        1, // upload chunk in parallel to writing another chunk
 	})
 	defer writer.Close() //nolint:errcheck
 
@@ -296,7 +297,7 @@ func (u *Uploader) uploadFileData(ctx context.Context, parentCheckpointRegistry 
 	return de, nil
 }
 
-func (u *Uploader) uploadSymlinkInternal(ctx context.Context, relativePath string, f fs.Symlink) (dirEntry *snapshot.DirEntry, ret error) {
+func (u *Uploader) uploadSymlinkInternal(ctx context.Context, relativePath string, f fs.Symlink, metadataComp compression.Name) (dirEntry *snapshot.DirEntry, ret error) {
 	u.Progress.HashingFile(relativePath)
 
 	defer func() {
@@ -310,7 +311,8 @@ func (u *Uploader) uploadSymlinkInternal(ctx context.Context, relativePath strin
 	}
 
 	writer := u.repo.NewObjectWriter(ctx, object.WriterOptions{
-		Description: "SYMLINK:" + f.Name(),
+		Description:        "SYMLINK:" + f.Name(),
+		MetadataCompressor: metadataComp,
 	})
 	defer writer.Close() //nolint:errcheck
 
@@ -351,9 +353,13 @@ func (u *Uploader) uploadStreamingFileInternal(ctx context.Context, relativePath
 	}()
 
 	comp := pol.CompressionPolicy.CompressorForFile(f)
+	metadataComp := pol.MetadataCompressionPolicy.MetadataCompressor()
+
 	writer := u.repo.NewObjectWriter(ctx, object.WriterOptions{
-		Description: "STREAMFILE:" + f.Name(),
-		Compressor:  comp,
+		Description:        "STREAMFILE:" + f.Name(),
+		Compressor:         comp,
+		MetadataCompressor: metadataComp,
+		Splitter:           pol.SplitterPolicy.SplitterForFile(f),
 	})
 
 	defer writer.Close() //nolint:errcheck
@@ -899,7 +905,8 @@ func (u *Uploader) processSingle(
 		return nil
 
 	case fs.Symlink:
-		de, err := u.uploadSymlinkInternal(ctx, entryRelativePath, entry)
+		childTree := policyTree.Child(entry.Name())
+		de, err := u.uploadSymlinkInternal(ctx, entryRelativePath, entry, childTree.EffectivePolicy().MetadataCompressionPolicy.MetadataCompressor())
 
 		return u.processEntryUploadResult(ctx, de, err, entryRelativePath, parentDirBuilder,
 			policyTree.EffectivePolicy().ErrorHandlingPolicy.IgnoreFileErrors.OrDefault(false),
@@ -950,6 +957,7 @@ func (u *Uploader) processSingle(
 	}
 }
 
+//nolint:unparam
 func (u *Uploader) processEntryUploadResult(ctx context.Context, de *snapshot.DirEntry, err error, entryRelativePath string, parentDirBuilder *DirManifestBuilder, isIgnored bool, logDetail policy.LogDetail, logMessage string, t0 timetrack.Timer) error {
 	if err != nil {
 		u.reportErrorAndMaybeCancel(err, isIgnored, parentDirBuilder, entryRelativePath)
@@ -1069,10 +1077,9 @@ type dirReadError struct {
 
 func uploadShallowDirInternal(ctx context.Context, directory fs.Directory, u *Uploader) (*snapshot.DirEntry, error) {
 	if pf, ok := directory.(snapshot.HasDirEntryOrNil); ok {
-		switch de, err := pf.DirEntryOrNil(ctx); {
-		case err != nil:
+		if de, err := pf.DirEntryOrNil(ctx); err != nil {
 			return nil, errors.Wrapf(err, "error reading placeholder for %q", directory.Name())
-		case err == nil && de != nil:
+		} else if de != nil {
 			if _, err := u.repo.VerifyObject(ctx, de.ObjectID); err != nil {
 				return nil, errors.Wrapf(err, "invalid placeholder for %q contains foreign object.ID", directory.Name())
 			}
@@ -1141,6 +1148,8 @@ func uploadDirInternal(
 
 	childCheckpointRegistry := &checkpointRegistry{}
 
+	metadataComp := policyTree.EffectivePolicy().MetadataCompressionPolicy.MetadataCompressor()
+
 	thisCheckpointRegistry.addCheckpointCallback(directory.Name(), func() (*snapshot.DirEntry, error) {
 		// when snapshotting the parent, snapshot all our children and tell them to populate
 		// childCheckpointBuilder
@@ -1153,7 +1162,7 @@ func uploadDirInternal(
 
 		checkpointManifest := thisCheckpointBuilder.Build(fs.UTCTimestampFromTime(directory.ModTime()), IncompleteReasonCheckpoint)
 
-		oid, err := writeDirManifest(ctx, u.repo, dirRelativePath, checkpointManifest)
+		oid, err := writeDirManifest(ctx, u.repo, dirRelativePath, checkpointManifest, metadataComp)
 		if err != nil {
 			return nil, errors.Wrap(err, "error writing dir manifest")
 		}
@@ -1168,7 +1177,7 @@ func uploadDirInternal(
 
 	dirManifest := thisDirBuilder.Build(fs.UTCTimestampFromTime(directory.ModTime()), u.incompleteReason())
 
-	oid, err := writeDirManifest(ctx, u.repo, dirRelativePath, dirManifest)
+	oid, err := writeDirManifest(ctx, u.repo, dirRelativePath, dirManifest, metadataComp)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error writing dir manifest: %v", directory.Name())
 	}
@@ -1268,37 +1277,9 @@ func (u *Uploader) Upload(
 
 	s.StartTime = fs.UTCTimestampFromTime(u.repo.Time())
 
-	var scanWG sync.WaitGroup
-
-	scanctx, cancelScan := context.WithCancel(ctx)
-
-	defer cancelScan()
-
 	switch entry := source.(type) {
 	case fs.Directory:
-		var previousDirs []fs.Directory
-
-		for _, m := range previousManifests {
-			if d := u.maybeOpenDirectoryFromManifest(ctx, m); d != nil {
-				previousDirs = append(previousDirs, d)
-			}
-		}
-
-		scanWG.Add(1)
-
-		go func() {
-			defer scanWG.Done()
-
-			wrapped := u.wrapIgnorefs(estimateLog(ctx), entry, policyTree, false /* reportIgnoreStats */)
-
-			ds, _ := u.scanDirectory(scanctx, wrapped, policyTree)
-
-			u.Progress.EstimatedDataSize(ds.numFiles, ds.totalFileSize)
-		}()
-
-		wrapped := u.wrapIgnorefs(uploadLog(ctx), entry, policyTree, true /* reportIgnoreStats */)
-
-		s.RootEntry, err = u.uploadDirWithCheckpointing(ctx, wrapped, policyTree, previousDirs, sourceInfo)
+		s.RootEntry, err = u.uploadDir(ctx, previousManifests, entry, policyTree, sourceInfo)
 
 	case fs.File:
 		u.Progress.EstimatedDataSize(1, entry.Size())
@@ -1312,14 +1293,59 @@ func (u *Uploader) Upload(
 		return nil, rootCauseError(err)
 	}
 
-	cancelScan()
-	scanWG.Wait()
-
 	s.IncompleteReason = u.incompleteReason()
 	s.EndTime = fs.UTCTimestampFromTime(u.repo.Time())
 	s.Stats = *u.stats
 
 	return s, nil
+}
+
+func (u *Uploader) uploadDir(
+	ctx context.Context,
+	previousManifests []*snapshot.Manifest,
+	entry fs.Directory,
+	policyTree *policy.Tree,
+	sourceInfo snapshot.SourceInfo,
+) (*snapshot.DirEntry, error) {
+	var previousDirs []fs.Directory
+
+	for _, m := range previousManifests {
+		if d := u.maybeOpenDirectoryFromManifest(ctx, m); d != nil {
+			previousDirs = append(previousDirs, d)
+		}
+	}
+
+	estimationCtl := u.startDataSizeEstimation(ctx, entry, policyTree)
+	defer func() {
+		estimationCtl.Cancel()
+		estimationCtl.Wait()
+	}()
+
+	wrapped := u.wrapIgnorefs(uploadLog(ctx), entry, policyTree, true /* reportIgnoreStats */)
+
+	return u.uploadDirWithCheckpointing(ctx, wrapped, policyTree, previousDirs, sourceInfo)
+}
+
+func (u *Uploader) startDataSizeEstimation(
+	ctx context.Context,
+	entry fs.Directory,
+	policyTree *policy.Tree,
+) EstimationController {
+	logger := estimateLog(ctx)
+	wrapped := u.wrapIgnorefs(logger, entry, policyTree, false /* reportIgnoreStats */)
+
+	if u.disableEstimation || !u.Progress.Enabled() {
+		logger.Debug("Estimation disabled")
+		return noOpEstimationCtrl
+	}
+
+	estimator := NewEstimator(wrapped, policyTree, u.Progress.EstimationParameters(), logger)
+
+	estimator.StartEstimation(ctx, func(filesCount, totalFileSize int64) {
+		u.Progress.EstimatedDataSize(filesCount, totalFileSize)
+	})
+
+	return estimator
 }
 
 func (u *Uploader) wrapIgnorefs(logger logging.Logger, entry fs.Directory, policyTree *policy.Tree, reportIgnoreStats bool) fs.Directory {
